@@ -57,14 +57,14 @@ Example:<br>
 1. Navigate to the HACS tab in your Home Assistant and open the Frontend section.
 2. Click the three-dot menu in the top right corner.
 3. Select Custom repositories.
-4. Enter andiwirs/ha-home-appliance-timer-card as the repository and select Dashboard as the category.
-5. Click Add and then install the Home Appliance Timer Card from HACS.
+4. Enter `andiwirs/ha-home-appliance-timer-card` as the repository and select `Dashboard` as the category.
+5. Click Add and then install the `home-appliance-timer-card` from HACS.
 6. Refresh your browser.
 
 See the [HACS Custom Repository](https://hacs.xyz/docs/faq/custom_repositories/) page for full details.
 
 #### Manual
-1. Copy the home-appliance-timer-card.js file into your Home Assistant's /www folder.
+1. Copy the `home-appliance-timer-card.js` file into your Home Assistant's `/www` folder.
 2. In Home Assistant, go to your Dashboard, click on Edit Dashboard, then Manage Resources.
-3. Add /local/home-appliance-timer-card.js as a JavaScript Module.
+3. Add `/local/home-appliance-timer-card.js` as a JavaScript Module.
 4. Save and refresh your Home Assistant dashboard.
