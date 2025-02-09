@@ -1,7 +1,7 @@
 # Home Appliance Timer Card
 
-A custom Home Assistant card that helps you time your home appliances for the cheapest electricity price times. 
-The card supports both program start and program end timing, taking into account configurable program durations and optional offsets. 
+A custom Home Assistant card that helps you time your home appliances for the cheapest electricity price times.
+The card supports both program start and program end timing, taking into account configurable program durations and optional offsets.
 It can also automatically use a sensor entity to determine the best start time based on dynamic electricity pricing.
 
 ![Home Appliance Timer Card Example](card.jpg)
@@ -43,18 +43,17 @@ price_entity: sensor.best_electricity_time  # Optional entity providing time unt
 ```
 
 Calculates the effective timer delay in `end` mode as: (Target start time + program duration - offset - current time) rounded up depending on `device_timer_interval`.
-If the calculated delay is zero or negative, the card will display "Start now!".
-Example:
-  Current time: 08:10.
-  Desired start time: 12:00.
-  Program duration: 2:30 (150 minutes), offset: 10 minutes.
-  Effective program end = 12:00 + 150 - 10 = 14:20.
-  Timer Delay = 14:20 - 08:10 = 6h 10m, rounded (if only whole hours are allowed) up to 7 hours.
+If the calculated delay is zero or negative, the card will display "Start now!".<br>
+Example:<br>
+  Current time: 08:10.<br>
+  Desired start time: 12:00.<br>
+  Program duration: 2:30 (150 minutes), offset: 10 minutes.<br>
+  Effective program end = 12:00 + 150 - 10 = 14:20.<br>
+  Timer Delay = 14:20 - 08:10 = 6h 10m, rounded (if only whole hours are allowed) up to 7 hours.<br>
 
 ## Installation
 
 #### HACS
-
 1. Navigate to the HACS tab in your Home Assistant and open the Frontend section.
 2. Click the three-dot menu in the top right corner.
 3. Select Custom repositories.
@@ -62,10 +61,9 @@ Example:
 5. Click Add and then install the Home Appliance Timer Card from HACS.
 6. Refresh your browser.
 
-See the HACS Custom Repository page for full details.
+See the [HACS Custom Repository](https://hacs.xyz/docs/faq/custom_repositories/) page for full details.
 
 #### Manual
-
 1. Copy the home-appliance-timer-card.js file into your Home Assistant's /www folder.
 2. In Home Assistant, go to your Dashboard, click on Edit Dashboard, then Manage Resources.
 3. Add /local/home-appliance-timer-card.js as a JavaScript Module.
