@@ -6,11 +6,17 @@ It can also automatically use a sensor entity to determine the best start time b
 
 ![Home Appliance Timer Card Example](card.jpg)
 
-## Basic Setup
+## Features
 
-The card can be configured directly via its YAML configuration. You can choose whether the timer should be based on the program start or the program end. 
-In the program end mode, you can select from multiple programs with configurable durations and optional offsets.
-When a sensor entity is provided via `price_entity`, a toggle is available to switch between manual time selection and using the best price time.
+- Manual Time Selection: Provides a manual time selection interface with up/down arrow buttons for hours and minutes. Manual selection remains visible even when "Cheapest Start Time" is activated, allowing users to override it.
+  - If overridden, the toggle automatically turns off.
+  - Re-enabling the toggle resets the time to the best price time.
+  - If manually adjusted back to the best price time, the toggle automatically turns on again.
+- Dynamic Pricing Integration: If a price_entity is provided, the card can calculate and display the cheapest start time based on dynamic electricity pricing.
+- Program End Timing: In end mode, allows selection of programs with configurable durations and optional offsets. The dropdown displays program names and their durations in (HH:mm) format.
+- Timer Calculation: Calculates the effective timer delay as:
+  (Target start time + program duration - offset) - current time, rounded up to the next allowed timer interval.
+- Seamless Integration: Integrates with Home Assistant's theme using standard style variables.
 
 ## Configuration Options
 

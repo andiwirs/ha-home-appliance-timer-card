@@ -19,8 +19,10 @@
  *     - offset: (Optional) Time offset in minutes (default 0) to adjust the effective program time (e.g. delayed water heating).
  *
  * Features:
- * - Provides a manual time selection interface with up/down arrow buttons for hours and minutes, which is hidden
- *   when "Use Best Price Time" is activated.
+ * - Provides a manual time selection interface with up/down arrow buttons for hours and minutes.
+ *   Manual selection remains visible even when "Use Best Price Time" is activated, allowing users to override it.
+ *   If overridden, the toggle automatically turns off. Re-enabling it resets to the best price time.
+ *   If manually adjusted back to the best price time, the toggle automatically turns on again.
  * - In "end" mode, the program dropdown displays the program name along with its duration in (HH:mm) format.
  * - Calculates the effective timer delay as:
  *       (Target start time + program duration - offset) - current time,
@@ -40,50 +42,46 @@
 class HomeApplianceTimerCard extends HTMLElement {
   constructor() {
     super();
-    // Attach shadow DOM for style isolation.
     this.attachShadow({ mode: 'open' });
-    // Default configuration values.
     this._config = {
-      mode: 'start',               // 'start' to time program start, 'end' to time program end.
-      device_timer_interval: 60,   // Device timer can be set only in intervals (in minutes). Default: hourly (60 minutes).
-      ui_time_step: 15,            // UI time picker increment (in minutes). Default: 15 minutes.
-      programs: [],                // Array of programs (only used in mode 'end').
-      price_entity: null,          // Optional entity to derive best price time (in seconds).
-      use_best_price: false,       // Internal flag to toggle best price mode.
+      mode: 'start',
+      device_timer_interval: 60,
+      ui_time_step: 15,
+      programs: [],
+      price_entity: null,
+      use_best_price: false,
     };
 
-    // Internal state: selected time for manual target time selection.
     const now = new Date();
     this._selectedHour = now.getHours();
     this._selectedMinute = now.getMinutes();
-    // For mode 'end', default program index.
     this._selectedProgram = 0;
+    this._language = null;
+    this._dropdownOpen = false;
+    
+    // Speichern der letzten manuellen Zeiteinstellung
+    this._lastManualHour = null;
+    this._lastManualMinute = null;
   }
 
-  // Called when configuration is set from the YAML.
   setConfig(config) {
     if (!config) {
       throw new Error('No configuration provided');
     }
-    // Merge default values with provided configuration.
     this._config = Object.assign({}, this._config, config);
 
-    // If no price entity is provided, force use_best_price to false.
     if (!this._config.price_entity) {
       this._config.use_best_price = false;
     }
 
-    // Validate mode.
     if (this._config.mode !== 'start' && this._config.mode !== 'end') {
       throw new Error('mode must be either "start" or "end"');
     }
 
-    // In mode 'end' a programs array is required.
     if (this._config.mode === 'end' && !Array.isArray(this._config.programs)) {
       throw new Error('For mode "end", programs must be provided as an array');
     }
 
-    // Optionally set a default time (format: "HH:MM").
     if (this._config.default_time) {
       const parts = this._config.default_time.split(':');
       if (parts.length === 2) {
@@ -94,20 +92,42 @@ class HomeApplianceTimerCard extends HTMLElement {
     this._render();
   }
 
-  // Called by Home Assistant to pass the current state.
   set hass(hass) {
     this._hass = hass;
-    // If a price entity is configured, retrieve its value.
+    
+    // Detect language from Home Assistant
+    if (hass.language) {
+      this._language = hass.language;
+    }
+    
     if (this._config.price_entity && hass.states[this._config.price_entity]) {
       const stateObj = hass.states[this._config.price_entity];
       this._bestPriceSeconds = parseInt(stateObj.state);
+      
+      // Wenn der Schalter aktiviert ist, setze die Startzeit auf die günstigste Zeit
+      if (this._bestPriceSeconds !== null) {
+        const bestTime = new Date(new Date().getTime() + this._bestPriceSeconds * 1000);
+        this._bestPriceHour = bestTime.getHours();
+        this._bestPriceMinute = bestTime.getMinutes();
+        
+        // Wenn der Schalter aktiviert ist, setze die Startzeit auf die günstigste Zeit
+        if (this._config.use_best_price) {
+          this._selectedHour = this._bestPriceHour;
+          this._selectedMinute = this._bestPriceMinute;
+        }
+      }
     } else {
       this._bestPriceSeconds = null;
+      this._bestPriceHour = null;
+      this._bestPriceMinute = null;
     }
-    this._render();
+    
+    // Nur rendern, wenn das Dropdown nicht geöffnet ist
+    if (!this._dropdownOpen) {
+      this._render();
+    }
   }
 
-  // Helper: Create a button with a given label and click handler.
   _createButton(label, onClick) {
     const button = document.createElement('button');
     button.textContent = label;
@@ -115,36 +135,28 @@ class HomeApplianceTimerCard extends HTMLElement {
     return button;
   }
 
-  // Helper: Format time as HH:MM in 24h format with leading zeros.
   _formatTime(hour, minute) {
     return ('0' + hour).slice(-2) + ':' + ('0' + minute).slice(-2);
   }
 
-  // Helper: Compute the target Date based on the selected hour and minute.
-  // If the time is earlier than now, the target time is assumed to be on the next day.
   _getTargetTime() {
     const now = new Date();
     let target = new Date(now);
     target.setHours(this._selectedHour, this._selectedMinute, 0, 0);
     if (target <= now) {
-      // Assume next day if the selected time is already passed.
       target.setDate(target.getDate() + 1);
     }
     return target;
   }
 
-  // Helper: Compute the timer delay (in minutes) based on the selected options.
   _computeDelay() {
     const now = new Date();
     let targetTime = this._getTargetTime();
     let delayMinutes = 0;
 
     if (this._config.mode === 'start') {
-      // In "start" mode, the delay is the difference between the target start time and now.
       delayMinutes = (targetTime - now) / 60000;
     } else {
-      // In "end" mode, the effective end time is calculated by adding the program duration
-      // and subtracting the optional offset (e.g. delay before water heating starts).
       const program = this._config.programs[this._selectedProgram];
       const duration = parseInt(program.duration);
       const offset = program.offset ? parseInt(program.offset) : 0;
@@ -152,27 +164,72 @@ class HomeApplianceTimerCard extends HTMLElement {
       delayMinutes = (effectiveEndTime - now) / 60000;
     }
 
-    // If delay is less or equal zero, return 0 (will be interpreted as "Start now!").
     if (delayMinutes <= 0) {
       return 0;
     }
 
-    // Round up the delay to the device timer's allowed interval.
     const interval = this._config.device_timer_interval || 60;
     const roundedDelay = Math.ceil(delayMinutes / interval) * interval;
     return roundedDelay;
   }
 
-  // Render the complete card.
+  // Prüft, ob die aktuell gewählte Zeit der günstigsten Zeit entspricht
+  _isSelectedTimeBestPrice() {
+    if (this._bestPriceHour === null || this._bestPriceMinute === null) return false;
+    return this._selectedHour === this._bestPriceHour && this._selectedMinute === this._bestPriceMinute;
+  }
+
+  // Localization helper
+  _t(textKey) {
+    const translations = {
+      'use_best_price': {
+        'de': 'Günstigste Startzeit',
+        'en': 'Cheapest start time'
+      },
+      'select_program': {
+        'de': 'Programm',
+        'en': 'Program'
+      },
+      'best_price_start': {
+        'de': 'Günstigste Startzeit',
+        'en': 'Best Price Start Time'
+      },
+      'start_time': {
+        'de': 'Startzeit',
+        'en': 'Start Time'
+      },
+      'timer_setting': {
+        'de': 'Timer',
+        'en': 'Timer'
+      },
+      'start_now': {
+        'de': 'Jetzt starten!',
+        'en': 'Start now!'
+      },
+      'hour': {
+        'de': 'h',
+        'en': 'h'
+      },
+      'minute': {
+        'de': 'min',
+        'en': 'min'
+      },
+      'not_available': {
+        'de': 'Nicht verfügbar',
+        'en': 'N/A'
+      }
+    };
+    
+    const lang = (this._language && this._language.substring(0, 2) === 'de') ? 'de' : 'en';
+    return translations[textKey][lang] || translations[textKey]['en'];
+  }
+
   _render() {
     if (!this.shadowRoot) return;
-    // Clear existing content.
     this.shadowRoot.innerHTML = '';
 
-    // Create main card container.
     const card = document.createElement('ha-card');
 
-    // Header with title (if provided).
     if (this._config.title) {
       const header = document.createElement('div');
       header.className = 'card-header';
@@ -180,97 +237,38 @@ class HomeApplianceTimerCard extends HTMLElement {
       card.appendChild(header);
     }
 
-    // Card content container.
     const content = document.createElement('div');
     content.className = 'card-content';
 
-    // Show best price toggle if a price entity is configured.
-    if (this._config.price_entity) {
-      const toggleContainer = document.createElement('div');
-      toggleContainer.className = 'toggle-container';
-      const toggleLabel = document.createElement('label');
-      toggleLabel.textContent = 'Use Best Price Time: ';
-      const toggleInput = document.createElement('input');
-      toggleInput.type = 'checkbox';
-      toggleInput.checked = this._config.use_best_price || false;
-      toggleInput.addEventListener('change', (e) => {
-        this._config.use_best_price = e.target.checked;
-        this._render();
-      });
-      toggleContainer.appendChild(toggleLabel);
-      toggleContainer.appendChild(toggleInput);
-      content.appendChild(toggleContainer);
-    }
-
-    // If not using best price time, display manual time selection UI.
-    if (!this._config.use_best_price) {
-      // Time selection UI container.
-      const timePicker = document.createElement('div');
-      timePicker.className = 'time-picker';
-
-      // Hours selection section.
-      const hoursContainer = document.createElement('div');
-      hoursContainer.className = 'time-section';
-      const hourUp = this._createButton('▲', () => {
-        this._selectedHour = (this._selectedHour + 1) % 24;
-        this._render();
-      });
-      const hourDisplay = document.createElement('div');
-      hourDisplay.className = 'time-display';
-      hourDisplay.textContent = ('0' + this._selectedHour).slice(-2);
-      const hourDown = this._createButton('▼', () => {
-        this._selectedHour = (this._selectedHour + 23) % 24;
-        this._render();
-      });
-      hoursContainer.appendChild(hourUp);
-      hoursContainer.appendChild(hourDisplay);
-      hoursContainer.appendChild(hourDown);
-      timePicker.appendChild(hoursContainer);
-
-      // Minutes selection section.
-      const minutesContainer = document.createElement('div');
-      minutesContainer.className = 'time-section';
-      const minuteUp = this._createButton('▲', () => {
-        this._selectedMinute = (this._selectedMinute + this._config.ui_time_step) % 60;
-        this._render();
-      });
-      const minuteDisplay = document.createElement('div');
-      minuteDisplay.className = 'time-display';
-      minuteDisplay.textContent = ('0' + this._selectedMinute).slice(-2);
-      const minuteDown = this._createButton('▼', () => {
-        this._selectedMinute = (this._selectedMinute - this._config.ui_time_step + 60) % 60;
-        this._render();
-      });
-      minutesContainer.appendChild(minuteUp);
-      minutesContainer.appendChild(minuteDisplay);
-      minutesContainer.appendChild(minuteDown);
-      timePicker.appendChild(minutesContainer);
-
-      content.appendChild(timePicker);
-    } else {
-      // If best price mode is active, display the computed best price time.
-      const bestPriceDisplay = document.createElement('div');
-      bestPriceDisplay.className = 'best-price-display';
-      if (this._bestPriceSeconds !== null) {
-        const bestTime = new Date(new Date().getTime() + this._bestPriceSeconds * 1000);
-        bestPriceDisplay.textContent = 'Best Price Start Time: ' + this._formatTime(bestTime.getHours(), bestTime.getMinutes());
-      } else {
-        bestPriceDisplay.textContent = 'Best Price Start Time: N/A';
-      }
-      content.appendChild(bestPriceDisplay);
-    }
-
-    // In mode 'end' (program end timing) show a dropdown to select the program.
+    // Programm-Auswahl zuerst anzeigen
     if (this._config.mode === 'end' && this._config.programs && this._config.programs.length > 0) {
+      const programRow = document.createElement('div');
+      programRow.className = 'row program-row';
+      
+      const programLabel = document.createElement('div');
+      programLabel.className = 'name program-label';
+      programLabel.textContent = this._t('select_program');
+      
       const programContainer = document.createElement('div');
-      programContainer.className = 'program-container';
-      const programLabel = document.createElement('label');
-      programLabel.textContent = 'Select Program: ';
+      programContainer.className = 'state';
+      
       const programSelect = document.createElement('select');
+      programSelect.className = 'dropdown';
+      
+      // Event-Listener für das Öffnen und Schließen des Dropdowns
+      programSelect.addEventListener('mousedown', () => {
+        this._dropdownOpen = true;
+      });
+      
+      programSelect.addEventListener('blur', () => {
+        setTimeout(() => {
+          this._dropdownOpen = false;
+        }, 200);
+      });
+      
       this._config.programs.forEach((prog, index) => {
         const option = document.createElement('option');
         option.value = index;
-        // Format duration in HH:mm.
         const durationMinutes = parseInt(prog.duration);
         const hours = Math.floor(durationMinutes / 60);
         const minutes = durationMinutes % 60;
@@ -281,126 +279,343 @@ class HomeApplianceTimerCard extends HTMLElement {
         }
         programSelect.appendChild(option);
       });
+      
       programSelect.addEventListener('change', (e) => {
         this._selectedProgram = parseInt(e.target.value);
+        setTimeout(() => {
+          this._render();
+        }, 100);
+      });
+      
+      programContainer.appendChild(programSelect);
+      programRow.appendChild(programLabel);
+      programRow.appendChild(programContainer);
+      
+      content.appendChild(programRow);
+    }
+
+    // Günstigste Startzeit Schalter
+    if (this._config.price_entity) {
+      const toggleRow = document.createElement('div');
+      toggleRow.className = 'row';
+      
+      const iconContainer = document.createElement('div');
+      iconContainer.className = 'icon-container';
+      const icon = document.createElement('ha-icon');
+      icon.setAttribute('icon', 'mdi:progress-clock');
+      iconContainer.appendChild(icon);
+      
+      const toggleLabel = document.createElement('div');
+      toggleLabel.className = 'name';
+      toggleLabel.textContent = this._t('use_best_price');
+      
+      const toggleContainer = document.createElement('div');
+      toggleContainer.className = 'state';
+      
+      // HA-Style Switch
+      const switchContainer = document.createElement('div');
+      switchContainer.className = 'ha-switch-container';
+      
+      const toggleSwitch = document.createElement('ha-switch');
+      
+      // Schalter basierend auf aktuellem Zustand setzen
+      toggleSwitch.checked = this._isSelectedTimeBestPrice();
+      this._config.use_best_price = toggleSwitch.checked;
+      
+      toggleSwitch.addEventListener('change', (e) => {
+        const wasChecked = this._config.use_best_price;
+        this._config.use_best_price = e.target.checked;
+        
+        if (this._config.use_best_price) {
+          // Speichere aktuelle Zeit, bevor wir zur günstigsten Zeit wechseln
+          if (!wasChecked) {
+            this._lastManualHour = this._selectedHour;
+            this._lastManualMinute = this._selectedMinute;
+          }
+          
+          // Wenn eingeschaltet, setze auf günstigste Zeit
+          if (this._bestPriceHour !== null && this._bestPriceMinute !== null) {
+            this._selectedHour = this._bestPriceHour;
+            this._selectedMinute = this._bestPriceMinute;
+          }
+        } else {
+          // Wenn ausgeschaltet, setze auf letzte manuelle Zeit zurück
+          if (this._lastManualHour !== null && this._lastManualMinute !== null) {
+            this._selectedHour = this._lastManualHour;
+            this._selectedMinute = this._lastManualMinute;
+          }
+        }
+        
         this._render();
       });
-      programContainer.appendChild(programLabel);
-      programContainer.appendChild(programSelect);
-      content.appendChild(programContainer);
+      
+      switchContainer.appendChild(toggleSwitch);
+      toggleContainer.appendChild(switchContainer);
+      
+      toggleRow.appendChild(iconContainer);
+      toggleRow.appendChild(toggleLabel);
+      toggleRow.appendChild(toggleContainer);
+      
+      content.appendChild(toggleRow);
     }
 
-    // Compute the timer delay.
-    let delayMinutes = 0;
-    if (this._config.use_best_price && this._bestPriceSeconds !== null) {
-      // Use best price sensor to compute target time.
-      const now = new Date();
-      const targetTime = new Date(now.getTime() + this._bestPriceSeconds * 1000);
-      if (this._config.mode === 'start') {
-        delayMinutes = (targetTime - now) / 60000;
-      } else {
-        const program = this._config.programs[this._selectedProgram];
-        const duration = parseInt(program.duration);
-        const offset = program.offset ? parseInt(program.offset) : 0;
-        const effectiveEndTime = new Date(targetTime.getTime() + (duration - offset) * 60000);
-        delayMinutes = (effectiveEndTime - now) / 60000;
-      }
-      // Round up to the device timer's interval.
-      const interval = this._config.device_timer_interval || 60;
-      delayMinutes = Math.ceil(delayMinutes / interval) * interval;
-    } else {
-      delayMinutes = this._computeDelay();
-    }
+    // Time selection row with clock icon
+    const timeRow = document.createElement('div');
+    timeRow.className = 'row';
+    
+    const timeIconContainer = document.createElement('div');
+    timeIconContainer.className = 'icon-container';
+    const timeIcon = document.createElement('ha-icon');
+    timeIcon.setAttribute('icon', 'mdi:clock-start');
+    timeIconContainer.appendChild(timeIcon);
+    
+    const timeLabel = document.createElement('div');
+    timeLabel.className = 'name';
+    timeLabel.textContent = this._t('start_time');
+    
+    const timeContainer = document.createElement('div');
+    timeContainer.className = 'state';
+    
+    // Immer Zeitauswahl anzeigen
+    const timePicker = document.createElement('div');
+    timePicker.className = 'time-picker';
 
-    // Create result display: if delay is <= 0, show "Start now!", else show computed timer setting.
+    const hoursContainer = document.createElement('div');
+    hoursContainer.className = 'time-section';
+    const hourUp = this._createButton('▲', () => {
+      this._selectedHour = (this._selectedHour + 1) % 24;
+      
+      // Speichere die manuelle Zeiteinstellung
+      this._lastManualHour = this._selectedHour;
+      this._lastManualMinute = this._selectedMinute;
+      
+      // Prüfen, ob die neue Zeit der günstigsten Zeit entspricht
+      this._config.use_best_price = this._isSelectedTimeBestPrice();
+      
+      this._render();
+    });
+    const hourDisplay = document.createElement('div');
+    hourDisplay.className = 'time-display';
+    hourDisplay.textContent = ('0' + this._selectedHour).slice(-2);
+    const hourDown = this._createButton('▼', () => {
+      this._selectedHour = (this._selectedHour + 23) % 24;
+      
+      // Speichere die manuelle Zeiteinstellung
+      this._lastManualHour = this._selectedHour;
+      this._lastManualMinute = this._selectedMinute;
+      
+      // Prüfen, ob die neue Zeit der günstigsten Zeit entspricht
+      this._config.use_best_price = this._isSelectedTimeBestPrice();
+      
+      this._render();
+    });
+    hoursContainer.appendChild(hourUp);
+    hoursContainer.appendChild(hourDisplay);
+    hoursContainer.appendChild(hourDown);
+    timePicker.appendChild(hoursContainer);
+
+    const minutesContainer = document.createElement('div');
+    minutesContainer.className = 'time-section';
+    const minuteUp = this._createButton('▲', () => {
+      this._selectedMinute = (this._selectedMinute + this._config.ui_time_step) % 60;
+      
+      // Speichere die manuelle Zeiteinstellung
+      this._lastManualHour = this._selectedHour;
+      this._lastManualMinute = this._selectedMinute;
+      
+      // Prüfen, ob die neue Zeit der günstigsten Zeit entspricht
+      this._config.use_best_price = this._isSelectedTimeBestPrice();
+      
+      this._render();
+    });
+    const minuteDisplay = document.createElement('div');
+    minuteDisplay.className = 'time-display';
+    minuteDisplay.textContent = ('0' + this._selectedMinute).slice(-2);
+    const minuteDown = this._createButton('▼', () => {
+      this._selectedMinute = (this._selectedMinute - this._config.ui_time_step + 60) % 60;
+      
+      // Speichere die manuelle Zeiteinstellung
+      this._lastManualHour = this._selectedHour;
+      this._lastManualMinute = this._selectedMinute;
+      
+      // Prüfen, ob die neue Zeit der günstigsten Zeit entspricht
+      this._config.use_best_price = this._isSelectedTimeBestPrice();
+      
+      this._render();
+    });
+    minutesContainer.appendChild(minuteUp);
+    minutesContainer.appendChild(minuteDisplay);
+    minutesContainer.appendChild(minuteDown);
+    timePicker.appendChild(minutesContainer);
+    
+    timeContainer.appendChild(timePicker);
+    
+    timeRow.appendChild(timeIconContainer);
+    timeRow.appendChild(timeLabel);
+    timeRow.appendChild(timeContainer);
+    
+    content.appendChild(timeRow);
+
+    let delayMinutes = this._computeDelay();
+
+    const resultRow = document.createElement('div');
+    resultRow.className = 'row result-row';
+    
+    const resultLabel = document.createElement('div');
+    resultLabel.className = 'name';
+    resultLabel.textContent = this._t('timer_setting');
+    
     const resultDisplay = document.createElement('div');
-    resultDisplay.className = 'result-display';
+    resultDisplay.className = 'state result-display';
+    
     if (delayMinutes <= 0) {
-      resultDisplay.textContent = 'Start now!';
+      resultDisplay.textContent = this._t('start_now');
     } else {
-      // Convert delayMinutes into hours and minutes.
       const hours = Math.floor(delayMinutes / 60);
       const minutes = delayMinutes % 60;
-      let resultText = 'Timer Setting: ';
+      let resultText = '';
       if (hours > 0) {
-        resultText += hours + 'h ';
+        resultText += hours + this._t('hour') + ' ';
       }
       if (minutes > 0) {
-        resultText += minutes + 'min';
+        resultText += minutes + this._t('minute');
       }
       if (hours === 0 && minutes === 0) {
-        resultText = 'Start now!';
+        resultText = this._t('start_now');
       }
       resultDisplay.textContent = resultText;
     }
-    content.appendChild(resultDisplay);
+    
+    resultRow.appendChild(resultLabel);
+    resultRow.appendChild(resultDisplay);
+    
+    content.appendChild(resultRow);
 
-    // Append content to the card.
     card.appendChild(content);
 
-    // Add CSS styles so that the card integrates seamlessly into Home Assistant.
     const style = document.createElement('style');
     style.textContent = `
+      :host {
+        --row-height: 40px;
+        --secondary-text-color: var(--primary-text-color);
+      }
       ha-card {
-        font-family: var(--paper-font-body1_-_font-family, sans-serif);
-        color: var(--primary-text-color);
-        background: var(--card-background-color);
-        border-radius: var(--ha-card-border-radius, 12px);
         padding: 16px;
+        color: var(--primary-text-color);
       }
       .card-header {
-        font-size: var(--ha-card-header-font-size, 1.5em);
-        font-weight: var(--ha-card-header-font-weight, 500);
-        padding-bottom: 8px;
-        margin-bottom: 16px;
-        width: 100%;
+        color: var(--ha-card-header-color, --primary-text-color);
+        font-family: var(--ha-card-header-font-family, inherit);
+        font-size: var(--ha-card-header-font-size, 24px);
+        letter-spacing: -0.012em;
+        line-height: 32px;
+        display: block;
+        padding: 8px 0 16px;
       }
       .card-content {
+        padding: 0;
         display: flex;
         flex-direction: column;
-        align-items: center;
       }
-      .toggle-container {
-        margin-bottom: 16px;
+      .row {
+        display: flex;
+        align-items: center;
+        min-height: var(--row-height);
+        margin-bottom: 8px;
+      }
+      .program-row {
+        display: flex;
+        align-items: center;
+        min-height: var(--row-height);
+        margin-bottom: 8px;
+      }
+      .icon-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        color: var(--paper-item-icon-color, var(--primary-text-color));
+      }
+      .name {
+        flex: 1;
+        margin-left: 8px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 120px;
+      }
+      .program-label {
+        min-width: 160px;
+        flex-shrink: 0;
+        white-space: nowrap;
+        overflow: visible;
+      }
+      .state {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        min-width: 120px;
+      }
+      /* HA-Style Switch */
+      ha-switch {
+        --mdc-theme-secondary: var(--switch-checked-color, var(--primary-color));
+      }
+      .ha-switch-container {
+        display: flex;
+        align-items: center;
       }
       .time-picker {
         display: flex;
-        flex-direction: row;
-        margin-bottom: 16px;
+        justify-content: center;
+        gap: 16px;
       }
       .time-section {
         display: flex;
         flex-direction: column;
         align-items: center;
-        margin: 0 8px;
       }
       .time-display {
         font-size: 2em;
+        font-weight: 400;
         margin: 4px 0;
+        line-height: 1.2;
       }
       button {
         background: none;
         border: none;
         color: var(--primary-text-color);
-        font-size: 1em;
+        font-size: 1.5em;
         cursor: pointer;
+        padding: 0;
+        height: 24px;
+        width: 24px;
+        line-height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       button:focus {
         outline: none;
       }
-      .program-container {
-        margin-bottom: 16px;
+      .dropdown {
+        background: var(--card-background-color);
+        border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
+        border-radius: 4px;
+        padding: 4px 8px;
+        color: var(--primary-text-color);
+        font-size: 14px;
+        height: 32px;
         width: 100%;
-        text-align: center;
+        min-width: 220px; /* Dropdown noch größer machen */
       }
       .result-display {
-        font-size: 1.2em;
-        font-weight: bold;
-        margin-top: 16px;
+        font-weight: 500;
+      }
+      .result-row {
+        margin-top: 8px;
       }
       .best-price-display {
-        margin-bottom: 16px;
-        font-size: 1em;
+        font-size: 1.1em;
       }
     `;
     this.shadowRoot.appendChild(style);
@@ -412,7 +627,7 @@ class HomeApplianceTimerCard extends HTMLElement {
 if (!customElements.get("home-appliance-timer-card")) {
   customElements.define("home-appliance-timer-card", HomeApplianceTimerCard);
   console.info(
-    `%c andiwirs/ha-home-appliance-timer-card %c v1.0.0 `
+    `%c andiwirs/ha-home-appliance-timer-card %c v1.0.1 `
   )
 }
 
